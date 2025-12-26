@@ -659,16 +659,685 @@ Output: Predicted Label (0-3)
 
 **Metrics Calculated:**
 
-| City | Accuracy | F1-Score (Macro) |
-|------|----------|------------------|
-| Bengaluru | % | Score |
-| Delhi | % | Score |
-| Hyderabad | % | Score |
-| Jaipur | % | Score |
-| Kanpur | % | Score |
-| Mumbai | % | Score |
-| Nagpur | % | Score |
-| Pune | % | Score |
+Step 1: Setup and dataset download (Kaggle)
+
+
+[ ]
+from google.colab import files
+files.upload()
+
+
+[ ]
+!mkdir -p ~/.kaggle
+!cp kaggle.json ~/.kaggle/
+!chmod 600 ~/.kaggle/kaggle.json
+!kaggle datasets download -d hiteshsoneji/historical-weather-data-for-indian-cities
+!unzip historical-weather-data-for-indian-cities.zip
+Dataset URL: https://www.kaggle.com/datasets/hiteshsoneji/historical-weather-data-for-indian-cities
+License(s): other
+Downloading historical-weather-data-for-indian-cities.zip to /content
+  0% 0.00/11.8M [00:00<?, ?B/s]
+100% 11.8M/11.8M [00:00<00:00, 1.51GB/s]
+Step 2: Spark session and merge all city CSVs
+
+
+[ ]
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit
+
+spark = SparkSession.builder.appName("MultiCityWeather").getOrCreate()
+
+# List of city file basenames (ensure these files exist in /content)
+cities = ["jaipur","delhi","bombay","bengaluru","hyderabad","pune","kanpur","nagpur"]
+
+dfs = []
+for city in cities:
+    df = spark.read.csv(f"/content/{city}.csv", header=True, inferSchema=True)
+    df = df.withColumn("city", lit(city))
+    dfs.append(df)
+
+# Union all cities into one DataFrame
+weather_df = dfs[0]
+for df in dfs[1:]:
+    weather_df = weather_df.union(df)
+
+# Quick check
+weather_df.show(5)
+weather_df.printSchema()
+
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+|2009-01-01 00:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        12|        11|          17|         1|      49|     0.0|    1017|    9|        10|            4|            8|jaipur|
+|2009-01-01 01:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        11|        11|          17|         1|      50|     0.0|    1017|    9|        10|            3|            8|jaipur|
+|2009-01-01 02:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        10|        11|        10|          18|         1|      51|     0.0|    1017|    9|        10|            2|            8|jaipur|
+|2009-01-01 03:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|         9|        10|         9|          18|         1|      52|     0.0|    1017|    8|        10|            1|            9|jaipur|
+|2009-01-01 04:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        2|        11|        12|        11|          15|         1|      49|     0.0|    1018|   10|        10|            1|            8|jaipur|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+only showing top 5 rows
+
+root
+ |-- date_time: timestamp (nullable = true)
+ |-- maxtempC: integer (nullable = true)
+ |-- mintempC: integer (nullable = true)
+ |-- totalSnow_cm: double (nullable = true)
+ |-- sunHour: double (nullable = true)
+ |-- uvIndex5: integer (nullable = true)
+ |-- uvIndex6: integer (nullable = true)
+ |-- moon_illumination: integer (nullable = true)
+ |-- moonrise: string (nullable = true)
+ |-- moonset: string (nullable = true)
+ |-- sunrise: string (nullable = true)
+ |-- sunset: string (nullable = true)
+ |-- DewPointC: integer (nullable = true)
+ |-- FeelsLikeC: integer (nullable = true)
+ |-- HeatIndexC: integer (nullable = true)
+ |-- WindChillC: integer (nullable = true)
+ |-- WindGustKmph: integer (nullable = true)
+ |-- cloudcover: integer (nullable = true)
+ |-- humidity: integer (nullable = true)
+ |-- precipMM: double (nullable = true)
+ |-- pressure: integer (nullable = true)
+ |-- tempC: integer (nullable = true)
+ |-- visibility: integer (nullable = true)
+ |-- winddirDegree: integer (nullable = true)
+ |-- windspeedKmph: integer (nullable = true)
+ |-- city: string (nullable = false)
+
+Step 3: Preprocessing (clean and cast)
+
+
+[ ]
+from pyspark.sql.functions import col
+
+# Drop nulls in key columns (adjust if your dataset uses different names)
+weather_df = weather_df.dropna(subset=["tempC","humidity","pressure","windspeedKmph","precipMM"])
+
+# Cast timestamp
+weather_df = weather_df.withColumn("date_time", col("date_time").cast("timestamp"))
+
+# Optional: filter year range (change or remove as needed)
+# weather_df = weather_df.filter(col("date_time") >= "2015-01-01")
+
+# Diagnostics
+print("Rows:", weather_df.count())
+weather_df.printSchema()
+weather_df.show(5)
+
+Rows: 771456
+root
+ |-- date_time: timestamp (nullable = true)
+ |-- maxtempC: integer (nullable = true)
+ |-- mintempC: integer (nullable = true)
+ |-- totalSnow_cm: double (nullable = true)
+ |-- sunHour: double (nullable = true)
+ |-- uvIndex5: integer (nullable = true)
+ |-- uvIndex6: integer (nullable = true)
+ |-- moon_illumination: integer (nullable = true)
+ |-- moonrise: string (nullable = true)
+ |-- moonset: string (nullable = true)
+ |-- sunrise: string (nullable = true)
+ |-- sunset: string (nullable = true)
+ |-- DewPointC: integer (nullable = true)
+ |-- FeelsLikeC: integer (nullable = true)
+ |-- HeatIndexC: integer (nullable = true)
+ |-- WindChillC: integer (nullable = true)
+ |-- WindGustKmph: integer (nullable = true)
+ |-- cloudcover: integer (nullable = true)
+ |-- humidity: integer (nullable = true)
+ |-- precipMM: double (nullable = true)
+ |-- pressure: integer (nullable = true)
+ |-- tempC: integer (nullable = true)
+ |-- visibility: integer (nullable = true)
+ |-- winddirDegree: integer (nullable = true)
+ |-- windspeedKmph: integer (nullable = true)
+ |-- city: string (nullable = false)
+
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+|2009-01-01 00:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        12|        11|          17|         1|      49|     0.0|    1017|    9|        10|            4|            8|jaipur|
+|2009-01-01 01:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        11|        11|          17|         1|      50|     0.0|    1017|    9|        10|            3|            8|jaipur|
+|2009-01-01 02:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        10|        11|        10|          18|         1|      51|     0.0|    1017|    9|        10|            2|            8|jaipur|
+|2009-01-01 03:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|         9|        10|         9|          18|         1|      52|     0.0|    1017|    8|        10|            1|            9|jaipur|
+|2009-01-01 04:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        2|        11|        12|        11|          15|         1|      49|     0.0|    1018|   10|        10|            1|            8|jaipur|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+
+only showing top 5 rows
+
+Step 4: Basic exploratory plots (cleaned data)
+
+
+[ ]
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Sample to Pandas for plotting (adjust fraction for speed/quality)
+pdf = weather_df.sample(False, 0.05, seed=42).toPandas()
+
+# Temperature trend (all cities mixed)
+plt.figure(figsize=(12,5))
+plt.plot(pdf["date_time"], pdf["tempC"], color="orange", alpha=0.6)
+plt.title("Temperature trend (sample)")
+plt.xlabel("Date")
+plt.ylabel("Temp (°C)")
+plt.show()
+
+# Humidity distribution
+plt.figure(figsize=(8,5))
+sns.histplot(pdf["humidity"], bins=40, kde=True, color="blue")
+plt.title("Humidity distribution (sample)")
+plt.xlabel("Humidity (%)")
+plt.show()
+
+# Rainfall distribution (precipMM)
+plt.figure(figsize=(8,5))
+sns.histplot(pdf["precipMM"], bins=40, kde=True, color="green")
+plt.title("Rainfall (precipMM) distribution (sample)")
+plt.xlabel("Rainfall (mm)")
+plt.show()
+
+Step 5: Feature engineering (month, day, hour) and exploratory plots
+
+
+[ ]
+from pyspark.sql.functions import month, dayofmonth, hour
+
+weather_df = weather_df.withColumn("month", month("date_time"))
+weather_df = weather_df.withColumn("day", dayofmonth("date_time"))
+weather_df = weather_df.withColumn("hour", hour("date_time"))
+
+# Convert a fresh sample for plotting engineered features
+pdf_feat = weather_df.sample(False, 0.05, seed=123).toPandas()
+
+# Boxplot of temperature by month
+plt.figure(figsize=(12,5))
+sns.boxplot(x="month", y="tempC", data=pdf_feat, palette="Oranges")
+plt.title("Temperature distribution by month")
+plt.xlabel("Month")
+plt.ylabel("Temp (°C)")
+plt.show()
+
+# Boxplot of humidity by hour
+plt.figure(figsize=(12,5))
+sns.boxplot(x="hour", y="humidity", data=pdf_feat, palette="Blues")
+plt.title("Humidity distribution by hour")
+plt.xlabel("Hour")
+plt.ylabel("Humidity (%)")
+plt.show()
+
+Step 6: City-wise yearly/monthly aggregations and comparisons
+
+
+[ ]
+from pyspark.sql.functions import year, avg, sum as spark_sum
+
+# Yearly averages per city
+yearly = weather_df.groupBy(year("date_time").alias("year"), "city").agg(
+    avg("humidity").alias("humidity_avg"),
+    avg("precipMM").alias("rainfall_avg"),
+    avg("tempC").alias("temp_avg")
+).orderBy("year","city")
+
+pdf_yearly = yearly.toPandas()
+
+# Bar charts: average by city (aggregating across all years present)
+city_avg = weather_df.groupBy("city").agg(
+    avg("humidity").alias("humidity_avg"),
+    avg("precipMM").alias("rainfall_avg"),
+    avg("tempC").alias("temp_avg")
+).orderBy("city")
+pdf_city_avg = city_avg.toPandas()
+
+# Plot average humidity by city
+plt.figure(figsize=(10,6))
+sns.barplot(x="city", y="humidity_avg", data=pdf_city_avg, color="steelblue")
+plt.title("Average humidity by city")
+plt.xticks(rotation=45)
+plt.ylabel("Humidity (%)")
+plt.show()
+
+# Plot average rainfall by city
+plt.figure(figsize=(10,6))
+sns.barplot(x="city", y="rainfall_avg", data=pdf_city_avg, color="seagreen")
+plt.title("Average rainfall (precipMM) by city")
+plt.xticks(rotation=45)
+plt.ylabel("Rainfall (mm)")
+plt.show()
+
+# Plot average temperature by city
+plt.figure(figsize=(10,6))
+sns.barplot(x="city", y="temp_avg", data=pdf_city_avg, color="tomato")
+plt.title("Average temperature by city")
+plt.xticks(rotation=45)
+plt.ylabel("Temp (°C)")
+plt.show()
+
+# Print numeric comparisons
+print("City averages (humidity_avg, rainfall_avg, temp_avg):")
+print(pdf_city_avg.sort_values("city").to_string(index=False))
+
+# Top cities
+top_humidity_city = pdf_city_avg.loc[pdf_city_avg["humidity_avg"].idxmax(), "city"]
+top_rainfall_city = pdf_city_avg.loc[pdf_city_avg["rainfall_avg"].idxmax(), "city"]
+top_temp_city     = pdf_city_avg.loc[pdf_city_avg["temp_avg"].idxmax(), "city"]
+
+print("Highest humidity city:", top_humidity_city)
+print("Highest rainfall city:", top_rainfall_city)
+print("Highest temperature city:", top_temp_city)
+
+Step 7: Heatwave and heavy rainfall analysis per city
+
+
+[ ]
+from pyspark.sql.functions import when
+
+# Define thresholds (tune these to your climate context)
+HEATWAVE_TEMP = 40.0    # °C: days/hours above this considered heatwave-like
+HEAVY_RAIN_MM = 20.0    # mm per time step (depends on dataset granularity)
+
+# Heatwave flag and heavy rain flag
+flagged = weather_df.withColumn("is_heatwave", when(col("tempC") >= HEATWAVE_TEMP, 1).otherwise(0)) \
+                    .withColumn("is_heavy_rain", when(col("precipMM") >= HEAVY_RAIN_MM, 1).otherwise(0))
+
+
+
+Step 8: Monthly heatmaps per city (humidity and rainfall)
+
+
+[ ]
+# Monthly averages per city
+monthly = weather_df.groupBy("city","month").agg(
+    avg("humidity").alias("humidity_avg"),
+    avg("precipMM").alias("rainfall_avg"),
+    avg("tempC").alias("temp_avg")
+).orderBy("city","month")
+
+pdf_monthly = monthly.toPandas()
+
+# Heatmap: humidity by month per city
+pivot_h = pdf_monthly.pivot(index="city", columns="month", values="humidity_avg")
+plt.figure(figsize=(12,6))
+sns.heatmap(pivot_h, annot=False, cmap="Blues")
+plt.title("Monthly average humidity by city")
+plt.xlabel("Month")
+plt.ylabel("City")
+plt.show()
+
+# Heatmap: rainfall by month per city
+pivot_r = pdf_monthly.pivot(index="city", columns="month", values="rainfall_avg")
+plt.figure(figsize=(12,6))
+sns.heatmap(pivot_r, annot=False, cmap="Greens")
+plt.title("Monthly average rainfall (precipMM) by city")
+plt.xlabel("Month")
+plt.ylabel("City")
+plt.show()
+
+# Heatmap: temperature by month per city
+pivot_t = pdf_monthly.pivot(index="city", columns="month", values="temp_avg")
+plt.figure(figsize=(12,6))
+sns.heatmap(pivot_t, annot=False, cmap="Oranges")
+plt.title("Monthly average temperature by city")
+plt.xlabel("Month")
+plt.ylabel("City")
+plt.show()
+
+Step:9 Code for Bar Chart of Max Temperature by City
+
+
+[ ]
+# Show one sample row per city
+weather_df.groupBy("city").agg({"tempC":"max"}).show()
+
+# Or show 5 rows per city
+for c in weather_df.select("city").distinct().rdd.flatMap(lambda x: x).collect():
+    print(f"--- {c} ---")
+    weather_df.filter(weather_df.city == c).show(5)
++---------+----------+
+|     city|max(tempC)|
++---------+----------+
+|   jaipur|        48|
+|    delhi|        51|
+|   bombay|        38|
+|bengaluru|        40|
+|hyderabad|        46|
+|     pune|        42|
+|   kanpur|        50|
+|   nagpur|        49|
++---------+----------+
+
+--- jaipur ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|2009-01-01 00:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        12|        11|          17|         1|      49|     0.0|    1017|    9|        10|            4|            8|jaipur|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        11|        11|        11|          17|         1|      50|     0.0|    1017|    9|        10|            3|            8|jaipur|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|        10|        11|        10|          18|         1|      51|     0.0|    1017|    9|        10|            2|            8|jaipur|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        1|         9|        10|         9|          18|         1|      52|     0.0|    1017|    8|        10|            1|            9|jaipur|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      24|       8|         0.0|    8.7|       4|       1|               31|10:15 AM|10:03 PM|07:16 AM|05:45 PM|        2|        11|        12|        11|          15|         1|      49|     0.0|    1018|   10|        10|            1|            8|jaipur|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+only showing top 5 rows
+
+--- delhi ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+-----+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph| city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+-----+-----+---+----+-----+
+|2009-01-01 00:00:00|      22|       9|         0.0|    8.7|       4|       1|               31|10:11 AM|09:57 PM|07:14 AM|05:36 PM|        4|        14|        14|        14|          19|         0|      50|     0.0|    1016|   10|        10|          331|           12|delhi|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      22|       9|         0.0|    8.7|       4|       1|               31|10:11 AM|09:57 PM|07:14 AM|05:36 PM|        4|        13|        14|        13|          21|         0|      51|     0.0|    1016|   10|        10|          329|           13|delhi|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      22|       9|         0.0|    8.7|       4|       1|               31|10:11 AM|09:57 PM|07:14 AM|05:36 PM|        4|        12|        13|        12|          22|         0|      52|     0.0|    1016|    9|        10|          327|           13|delhi|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      22|       9|         0.0|    8.7|       4|       1|               31|10:11 AM|09:57 PM|07:14 AM|05:36 PM|        4|        11|        13|        11|          23|         0|      54|     0.0|    1016|    9|        10|          326|           13|delhi|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      22|       9|         0.0|    8.7|       4|       1|               31|10:11 AM|09:57 PM|07:14 AM|05:36 PM|        3|        11|        13|        11|          21|         2|      52|     0.0|    1016|    9|        10|          318|           13|delhi|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+-----+-----+---+----+-----+
+only showing top 5 rows
+
+--- bombay ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|2009-01-01 00:00:00|      30|      22|         0.0|   11.0|       7|       1|               31|10:21 AM|10:20 PM|07:12 AM|06:13 PM|       15|        28|        28|        27|          11|         0|      49|     0.0|    1012|   22|        10|           20|           10|bombay|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      30|      22|         0.0|   11.0|       7|       1|               31|10:21 AM|10:20 PM|07:12 AM|06:13 PM|       15|        27|        27|        26|          12|         0|      50|     0.0|    1012|   22|        10|           18|           11|bombay|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      30|      22|         0.0|   11.0|       7|       1|               31|10:21 AM|10:20 PM|07:12 AM|06:13 PM|       15|        27|        27|        26|          14|         0|      50|     0.0|    1012|   22|        10|           16|           12|bombay|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      30|      22|         0.0|   11.0|       7|       1|               31|10:21 AM|10:20 PM|07:12 AM|06:13 PM|       14|        25|        26|        25|          15|         0|      50|     0.0|    1012|   22|        10|           14|           13|bombay|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      30|      22|         0.0|   11.0|       7|       1|               31|10:21 AM|10:20 PM|07:12 AM|06:13 PM|       14|        26|        26|        26|          14|         0|      49|     0.0|    1013|   22|        10|           28|           12|bombay|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+only showing top 5 rows
+
+--- bengaluru ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|     city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+|2009-01-01 00:00:00|      27|      12|         0.0|   11.6|       5|       1|               31|09:58 AM|10:03 PM|06:42 AM|06:05 PM|       16|        18|        18|        18|          11|         2|      91|     0.0|    1014|   14|        10|          109|            8|bengaluru|    1|  1|   0|    3|
+|2009-01-01 01:00:00|      27|      12|         0.0|   11.6|       5|       1|               31|09:58 AM|10:03 PM|06:42 AM|06:05 PM|       16|        17|        17|        17|           9|         2|      93|     0.0|    1014|   14|         7|           85|            6|bengaluru|    1|  1|   1|    3|
+|2009-01-01 02:00:00|      27|      12|         0.0|   11.6|       5|       1|               31|09:58 AM|10:03 PM|06:42 AM|06:05 PM|       15|        16|        16|        16|           7|         2|      94|     0.0|    1014|   13|         5|           61|            4|bengaluru|    1|  1|   2|    3|
+|2009-01-01 03:00:00|      27|      12|         0.0|   11.6|       5|       1|               31|09:58 AM|10:03 PM|06:42 AM|06:05 PM|       15|        15|        15|        15|           5|         2|      96|     0.0|    1014|   12|         2|           37|            3|bengaluru|    1|  1|   3|    3|
+|2009-01-01 04:00:00|      27|      12|         0.0|   11.6|       5|       1|               31|09:58 AM|10:03 PM|06:42 AM|06:05 PM|       15|        18|        18|        18|           5|         1|      88|     0.0|    1015|   14|         5|           45|            3|bengaluru|    1|  1|   4|    3|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+only showing top 5 rows
+
+--- hyderabad ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|     city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+|2009-01-01 00:00:00|      28|      15|         0.0|    8.7|       6|       1|               31|09:57 AM|09:58 PM|06:46 AM|05:53 PM|       18|        21|        21|        21|           9|         0|      83|     0.0|    1013|   16|        10|          150|            6|hyderabad|    1|  1|   0|    3|
+|2009-01-01 01:00:00|      28|      15|         0.0|    8.7|       6|       1|               31|09:57 AM|09:58 PM|06:46 AM|05:53 PM|       17|        20|        20|        20|           9|         0|      85|     0.0|    1013|   16|        10|          148|            5|hyderabad|    1|  1|   1|    3|
+|2009-01-01 02:00:00|      28|      15|         0.0|    8.7|       6|       1|               31|09:57 AM|09:58 PM|06:46 AM|05:53 PM|       17|        20|        20|        20|           8|         0|      86|     0.0|    1013|   15|        10|          147|            5|hyderabad|    1|  1|   2|    3|
+|2009-01-01 03:00:00|      28|      15|         0.0|    8.7|       6|       1|               31|09:57 AM|09:58 PM|06:46 AM|05:53 PM|       17|        19|        19|        19|           8|         0|      88|     0.0|    1013|   15|        10|          145|            5|hyderabad|    1|  1|   3|    3|
+|2009-01-01 04:00:00|      28|      15|         0.0|    8.7|       6|       1|               31|09:57 AM|09:58 PM|06:46 AM|05:53 PM|       17|        21|        22|        21|           7|         0|      80|     0.0|    1014|   16|        10|          148|            5|hyderabad|    1|  1|   4|    3|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+---------+-----+---+----+-----+
+only showing top 5 rows
+
+--- pune ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+----+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+----+-----+---+----+-----+
+|2009-01-01 00:00:00|      31|      13|         0.0|   11.0|       6|       1|               31|10:17 AM|10:16 PM|07:07 AM|06:09 PM|        7|        18|        18|        18|           7|         0|      50|     0.0|    1013|   13|        10|           59|            3|pune|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      31|      13|         0.0|   11.0|       6|       1|               31|10:17 AM|10:16 PM|07:07 AM|06:09 PM|        6|        18|        18|        18|           9|         0|      47|     0.0|    1013|   14|        10|           57|            4|pune|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      31|      13|         0.0|   11.0|       6|       1|               31|10:17 AM|10:16 PM|07:07 AM|06:09 PM|        6|        18|        18|        18|          10|         0|      44|     0.0|    1013|   14|        10|           55|            5|pune|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      31|      13|         0.0|   11.0|       6|       1|               31|10:17 AM|10:16 PM|07:07 AM|06:09 PM|        5|        18|        18|        18|          12|         0|      41|     0.0|    1013|   15|        10|           54|            6|pune|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      31|      13|         0.0|   11.0|       6|       1|               31|10:17 AM|10:16 PM|07:07 AM|06:09 PM|        5|        20|        20|        20|          11|         1|      38|     0.0|    1014|   16|        10|           68|            6|pune|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+----+-----+---+----+-----+
+only showing top 5 rows
+
+--- kanpur ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|2009-01-01 00:00:00|      24|      10|         0.0|    8.7|       4|       1|               31|09:56 AM|09:45 PM|06:57 AM|05:28 PM|        2|        11|        12|        11|          21|        17|      50|     0.0|    1015|   11|        10|          320|           10|kanpur|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      24|      10|         0.0|    8.7|       4|       1|               31|09:56 AM|09:45 PM|06:57 AM|05:28 PM|        3|        12|        13|        12|          22|        11|      52|     0.0|    1015|   11|        10|          315|           11|kanpur|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      24|      10|         0.0|    8.7|       4|       1|               31|09:56 AM|09:45 PM|06:57 AM|05:28 PM|        4|        12|        13|        12|          23|         6|      55|     0.0|    1015|   11|        10|          310|           11|kanpur|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      24|      10|         0.0|    8.7|       4|       1|               31|09:56 AM|09:45 PM|06:57 AM|05:28 PM|        5|        12|        13|        12|          23|         0|      57|     0.0|    1015|   10|        10|          304|           12|kanpur|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      24|      10|         0.0|    8.7|       4|       1|               31|09:56 AM|09:45 PM|06:57 AM|05:28 PM|        5|        14|        14|        14|          19|         0|      54|     0.0|    1016|   11|        10|          302|           11|kanpur|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+only showing top 5 rows
+
+--- nagpur ---
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|          date_time|maxtempC|mintempC|totalSnow_cm|sunHour|uvIndex5|uvIndex6|moon_illumination|moonrise| moonset| sunrise|  sunset|DewPointC|FeelsLikeC|HeatIndexC|WindChillC|WindGustKmph|cloudcover|humidity|precipMM|pressure|tempC|visibility|winddirDegree|windspeedKmph|  city|month|day|hour|label|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+|2009-01-01 00:00:00|      30|      14|         0.0|    8.7|       5|       1|               31|09:57 AM|09:53 PM|06:51 AM|05:44 PM|        6|        17|        17|        17|          14|         0|      48|     0.0|    1013|   14|        10|           15|            6|nagpur|    1|  1|   0|    0|
+|2009-01-01 01:00:00|      30|      14|         0.0|    8.7|       5|       1|               31|09:57 AM|09:53 PM|06:51 AM|05:44 PM|        6|        17|        17|        17|          16|         0|      48|     0.0|    1014|   14|        10|           21|            8|nagpur|    1|  1|   1|    0|
+|2009-01-01 02:00:00|      30|      14|         0.0|    8.7|       5|       1|               31|09:57 AM|09:53 PM|06:51 AM|05:44 PM|        5|        16|        16|        16|          19|         0|      48|     0.0|    1014|   14|        10|           27|            9|nagpur|    1|  1|   2|    0|
+|2009-01-01 03:00:00|      30|      14|         0.0|    8.7|       5|       1|               31|09:57 AM|09:53 PM|06:51 AM|05:44 PM|        5|        15|        15|        15|          21|         0|      49|     0.0|    1015|   14|        10|           32|           10|nagpur|    1|  1|   3|    0|
+|2009-01-01 04:00:00|      30|      14|         0.0|    8.7|       5|       1|               31|09:57 AM|09:53 PM|06:51 AM|05:44 PM|        5|        17|        17|        17|          18|         0|      47|     0.0|    1015|   15|        10|           34|           10|nagpur|    1|  1|   4|    0|
++-------------------+--------+--------+------------+-------+--------+--------+-----------------+--------+--------+--------+--------+---------+----------+----------+----------+------------+----------+--------+--------+--------+-----+----------+-------------+-------------+------+-----+---+----+-----+
+only showing top 5 rows
+
+
+[ ]
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+# Your Spark result (max temp per city) can be converted to Pandas
+city_max_temp = [
+    ("jaipur", 48),
+    ("delhi", 51),
+    ("bombay", 38),
+    ("bengaluru", 40),
+    ("hyderabad", 46),
+    ("pune", 42),
+    ("kanpur", 50),
+    ("nagpur", 49)
+]
+
+# Convert to DataFrame
+pdf_max = pd.DataFrame(city_max_temp, columns=["city", "max_tempC"])
+
+# Plot
+plt.figure(figsize=(10,6))
+sns.barplot(x="city", y="max_tempC", data=pdf_max, palette="coolwarm")
+
+plt.title("Maximum Temperature by City")
+plt.xlabel("City")
+plt.ylabel("Max Temperature (°C)")
+plt.xticks(rotation=45)
+plt.show()
+
+
+[ ]
+from pyspark.sql.functions import when, col
+
+# Create multi-class label column
+weather_df = weather_df.withColumn(
+    "label",
+    when(col("precipMM") >= 20, 1)               # Heavy Rain
+    .when(col("tempC") >= 40, 2)                 # Heatwave
+    .when(col("humidity") >= 80, 3)              # High Humidity
+    .otherwise(0)                                # Normal
+)
+
+# Print sample rows with labels
+weather_df.select("date_time","city","tempC","humidity","precipMM","label").show(10)
+
++-------------------+------+-----+--------+--------+-----+
+|          date_time|  city|tempC|humidity|precipMM|label|
++-------------------+------+-----+--------+--------+-----+
+|2009-01-01 00:00:00|jaipur|    9|      49|     0.0|    0|
+|2009-01-01 01:00:00|jaipur|    9|      50|     0.0|    0|
+|2009-01-01 02:00:00|jaipur|    9|      51|     0.0|    0|
+|2009-01-01 03:00:00|jaipur|    8|      52|     0.0|    0|
+|2009-01-01 04:00:00|jaipur|   10|      49|     0.0|    0|
+|2009-01-01 05:00:00|jaipur|   11|      46|     0.0|    0|
+|2009-01-01 06:00:00|jaipur|   13|      43|     0.0|    0|
+|2009-01-01 07:00:00|jaipur|   16|      38|     0.0|    0|
+|2009-01-01 08:00:00|jaipur|   18|      32|     0.0|    0|
+|2009-01-01 09:00:00|jaipur|   21|      26|     0.0|    0|
++-------------------+------+-----+--------+--------+-----+
+only showing top 10 rows
+
+
+[ ]
+# Show some Heavy Rain rows
+weather_class.filter(col("label") == 1).select("tempC","humidity","precipMM","label").show(5)
+
+# Show some Heatwave rows
+weather_class.filter(col("label") == 2).select("tempC","humidity","precipMM","label").show(5)
+
+# Show some High Humidity rows
+weather_class.filter(col("label") == 3).select("tempC","humidity","precipMM","label").show(5)
++-----+--------+--------+-----+
+|tempC|humidity|precipMM|label|
++-----+--------+--------+-----+
+|   27|      93|    22.5|    1|
+|   29|      92|    20.6|    1|
+|   31|      72|    22.9|    1|
+|   29|      81|    30.6|    1|
+|   24|      96|    23.6|    1|
++-----+--------+--------+-----+
+
++-----+--------+--------+-----+
+|tempC|humidity|precipMM|label|
++-----+--------+--------+-----+
+|   40|      11|     0.0|    2|
+|   41|      10|     0.0|    2|
+|   42|       9|     0.0|    2|
+|   41|       9|     0.0|    2|
+|   40|       8|     0.0|    2|
++-----+--------+--------+-----+
+only showing top 5 rows
+
++-----+--------+--------+-----+
+|tempC|humidity|precipMM|label|
++-----+--------+--------+-----+
+|   11|      80|     0.0|    3|
+|   11|      84|     0.0|    3|
+|   10|      88|     0.0|    3|
+|   12|      80|     0.0|    3|
+|   11|      80|     0.0|    3|
++-----+--------+--------+-----+
+only showing top 5 rows
+
+
+[ ]
+# Show distinct labels
+weather_class.select("label").distinct().show()
+
+# Count rows per label
+weather_class.groupBy("label").count().show()
+
++-----+
+|label|
++-----+
+|    3|
+|    2|
+|    0|
+|    1|
++-----+
+
++-----+------+
+|label| count|
++-----+------+
+|    3|133244|
+|    2| 25732|
+|    0|612475|
+|    1|     5|
++-----+------+
+
+Step 11:Train a Classifier
+
+
+[ ]
+import pandas as pd
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+# Convert Spark DataFrame to Pandas
+pdf = weather_df.select("tempC","humidity","pressure","windspeedKmph","month","hour","label").toPandas()
+
+# Features and labels
+X = pdf.drop("label", axis=1)
+y = pdf["label"]
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Multi-class XGBoost classifier
+xgb_model = XGBClassifier(
+    objective="multi:softmax",   # or "multi:softprob" for probabilities
+    num_class=4,                 # 4 classes: Normal, Heavy Rain, Heatwave, High Humidity
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+
+# Train
+xgb_model.fit(X_train, y_train)
+
+
+Step:12 Model Prediction
+
+
+[ ]
+# Predict
+y_pred = xgb_model.predict(X_test)
+
+# Evaluation
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
+print("\nClassification Report:\n", classification_report(y_test, y_pred))
+Confusion Matrix:
+ [[122530      0      0]
+ [     0   5080      0]
+ [     0      0  26682]]
+
+Classification Report:
+               precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00    122530
+           2       1.00      1.00      1.00      5080
+           3       1.00      1.00      1.00     26682
+
+    accuracy                           1.00    154292
+   macro avg       1.00      1.00      1.00    154292
+weighted avg       1.00      1.00      1.00    154292
+
+Step 13: Evaluate Predictions
+
+
+[ ]
+import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score
+
+# Ensure city is included
+pdf_pred = predictions.select("city","label","prediction").toPandas()
+
+# Group by city and compute metrics
+city_metrics = pdf_pred.groupby("city").apply(
+    lambda df: pd.Series({
+        "accuracy": accuracy_score(df["label"], df["prediction"]),
+
+
+
+[ ]
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+acc_eval = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
+f1_eval = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="f1")
+
+print("Accuracy: {:.2f}%".format(acc_eval.evaluate(predictions)*100))
+print("F1-score: {:.2f}%".format(f1_eval.evaluate(predictions)*100))
+
+# Confusion matrix
+pdf_pred = predictions.select("label","prediction"
+Accuracy: 96.70%
+F1-score: 96.34%
+Confusion Matrix:
+ [[120742    364   1298]
+ [  3037   2129      0]
+ [   384      0  26100]]
+
+Classification Report:
+               precision    recall  f1-score   support
+
+           0       0.97      0.99      0.98    122404
+           2       0.85      0.41      0.56      5166
+           3       0.95      0.99      0.97     26484
+
+    accuracy                           0.97    154054
+   macro avg       0.93      0.79      0.83    154054
+weighted avg       0.97      0.97      0.96    154054
 
 **Visualization:**
 - Grouped bar chart showing accuracy and F1-score per city
