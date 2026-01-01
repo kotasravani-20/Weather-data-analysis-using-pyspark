@@ -2,7 +2,7 @@
 
 ## 📊 Project Overview
 
-This project performs comprehensive weather data analysis on historical weather data from 8 major Indian cities using **PySpark**, **XGBoost**, and **Python data visualization libraries**. The analysis includes exploratory data analysis (EDA), feature engineering, extreme weather event detection, and multi-class weather classification using machine learning.
+This project performs comprehensive weather data analysis on historical weather data from 8 major Indian cities using **PySpark**, **XGBoost**, and **Python data visualization libraries**. The analysis includes exploratory data analysis (EDA), feature engineering, extreme weather event detection, and multi-class weather classification using Pyspark.
 
 ---
 
